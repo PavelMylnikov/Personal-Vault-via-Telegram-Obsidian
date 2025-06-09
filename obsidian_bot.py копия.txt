@@ -1,0 +1,105 @@
+# Импорты
+from telegram import Update
+from telegram.ext import ApplicationBuilder, MessageHandler, filters, ContextTypes
+import os
+from datetime import datetime
+import re
+
+# 🔐 Твой токен бота от @BotFather
+TELEGRAM_TOKEN = "токен полученный из фазера"
+MY_USER_ID = твой ID
+SAVE_PATH = r"Путь к архиву указанному в обсидиан"
+MEDIA_PATH = os.path.join(SAVE_PATH, "media")
+os.makedirs(MEDIA_PATH, exist_ok=True)
+
+# === УБИРАЕМ МУСОР И ОПАСНЫЕ СИМВОЛЫ ===
+def clean_text(text):
+    text = text.replace("\r", "").replace("\ufeff", "")
+    text = re.sub(r"[\u200b\u202c]", "", text)
+    return text.strip()
+
+def make_safe_filename(text: str, fallback: str = "note", max_length: int = 40):
+    base = text.strip() if text else fallback
+    base = base.replace("\n", " ").replace("\r", "")
+    base = re.sub(r"[\\/:*?\"<>|]", "_", base)
+    return base[:max_length].strip("_")
+
+# === ИЗВЛЕКАЕМ ТЕКСТ ОТКУДА СМОЖЕМ ===
+def extract_text(msg):
+    sources = {
+        "text": msg.text,
+        "caption": msg.caption,
+    }
+    for label, value in sources.items():
+        if value and isinstance(value, str) and len(value.strip()) > 0:
+            print(f"📌 Текст найден в: {label}")
+            return clean_text(value)
+    print("⚠️ Текст не найден ни в одном источнике.")
+    return ""
+
+# === ГЛАВНАЯ ФУНКЦИЯ ОБРАБОТКИ СООБЩЕНИЯ ===
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.message.from_user.id != MY_USER_ID:
+        print(f"🚫 Чужой пользователь: {update.message.from_user.id}")
+        return
+
+    message = update.message
+    text = extract_text(message)
+    print(f"🧾 Извлечённый текст ({len(text)}): {repr(text)}")
+
+    now = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    safe_title = make_safe_filename(text)
+    filename = f"{now}_{safe_title}.md"
+    filepath = os.path.join(SAVE_PATH, filename)
+
+    content = f"""---
+tags: [telegram, заметка]
+created: {now}
+author: Pavel Mylnikov
+---
+
+# 📝 Сообщение от {message.from_user.full_name}
+
+📅 {now}
+
+{text}
+"""
+
+    media_links = ""
+
+    if message.photo:
+        photo_file = await message.photo[-1].get_file()
+        photo_path = os.path.join(MEDIA_PATH, f"{now}_photo.jpg")
+        await photo_file.download_to_drive(photo_path)
+        rel_path = os.path.relpath(photo_path, SAVE_PATH).replace("\\", "/")
+        media_links += f"\n![photo]({rel_path})"
+
+    if message.document:
+        doc_file = await message.document.get_file()
+        doc_path = os.path.join(MEDIA_PATH, f"{now}_{message.document.file_name}")
+        await doc_file.download_to_drive(doc_path)
+        rel_path = os.path.relpath(doc_path, SAVE_PATH).replace("\\", "/")
+        media_links += f"\n[📎 {message.document.file_name}]({rel_path})"
+
+    if media_links:
+        content += media_links
+
+    if len(content.strip()) < 10:
+        print("❌ Контент слишком короткий — не сохраняю.")
+        return
+
+    try:
+        with open(filepath, "w", encoding="utf-8") as f:
+            f.write(content)
+            f.flush()
+            os.fsync(f.fileno())
+        print(f"✅ Успешно сохранено: {filename}")
+        print(f"📏 Размер файла: {os.path.getsize(filepath)} байт")
+    except Exception as e:
+        print(f"❌ Ошибка при сохранении файла: {e}")
+
+# === СТАРТ БОТА ===
+app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
+app.add_handler(MessageHandler(filters.ALL, handle_message))
+print("🤖 Бот запущен. Жду сообщения в Telegram...")
+app.run_polling()
